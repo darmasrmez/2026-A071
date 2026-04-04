@@ -1,0 +1,74 @@
+version: '3.9'
+
+name: 2026-A071
+
+services:
+  ${MODEL_NAME}-fine-tuning:
+    build:
+      context: .
+      dockerfile: ${DOCKERFILE}
+    ipc: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - ./${MODEL_NAME}/${SIZE}:/app:z
+      - /sys:/sys:ro
+    networks:
+      - backend
+
+  pytorch-rocm:
+    image: rocm/pytorch:${PYTORCH_VERSION}
+    command: sleep infinity
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    networks:
+      - backend
+  
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION}
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:z
+      - ./metrics:/prometheus:z
+    networks:
+      - backend
+  
+  node_exporter:
+    image: prom/node-exporter:${NODE_EXPORTER_VERSION}
+    container_name: node_exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /sys:/sys:ro
+    networks:
+      - backend
+  
+  amd_dme:
+    container_name: amd_dme
+    image: rocm/device-metrics-exporter:${AMD_DME_VERSION}
+    ports:
+      - "5000:5000"
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - /sys:/sys:ro
+    networks:
+      - backend
+  
+  grafana:
+    image: grafana/grafana-oss:${GRAFANA_VERSION}
+    ports:
+      - "3000:3000"
+    user: "$${UID}"
+    volumes:
+      - ./${MODEL_NAME}/data:/var/lib/grafana:z
+    networks:
+      - backend
+
+networks:
+  backend:
+    driver: bridge
