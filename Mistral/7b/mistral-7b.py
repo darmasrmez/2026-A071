@@ -10,7 +10,7 @@ def install_package(pkg_name:str):
     except ImportError:
         subprocess.check_call(['uv', 'pip', 'install', pkg_name])
         print(f'{pkg_name} successfully installed')
-    
+
 pkgs = ['python-dotenv', 'transformers', 'trl', 'accelerate', 'bitsandbytes', 'datasets', 'ninja', 'peft', 'codecarbon', 'packaging', 'zeus', 'wandb', 'huggingface-hub', 'tqdm', 'evaluate', 'bert_score']
 
 

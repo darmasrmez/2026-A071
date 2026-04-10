@@ -1,31 +1,22 @@
 version: '3.9'
 
-name: 2026-A071
+name: 2026-A071_${MODEL_NAME}_${SIZE}
 
 services:
   ${MODEL_NAME}-fine-tuning:
     build:
       context: .
-      dockerfile: ${DOCKERFILE}
+      dockerfile: ${MODEL_NAME}-${SIZE}.Dockerfile
     ipc: host
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
     volumes:
-      - ./${MODEL_NAME}/${SIZE}:/app:z
+      - ./:/app:z
       - /sys:/sys:ro
     networks:
       - backend
 
-  pytorch-rocm:
-    image: rocm/pytorch:${PYTORCH_VERSION}
-    command: sleep infinity
-    devices:
-      - /dev/kfd:/dev/kfd
-      - /dev/dri:/dev/dri
-    networks:
-      - backend
-  
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}
     ports:
@@ -35,7 +26,7 @@ services:
       - ./metrics:/prometheus:z
     networks:
       - backend
-  
+
   node_exporter:
     image: prom/node-exporter:${NODE_EXPORTER_VERSION}
     container_name: node_exporter
@@ -45,7 +36,7 @@ services:
       - /sys:/sys:ro
     networks:
       - backend
-  
+
   amd_dme:
     container_name: amd_dme
     image: rocm/device-metrics-exporter:${AMD_DME_VERSION}
@@ -58,14 +49,14 @@ services:
       - /sys:/sys:ro
     networks:
       - backend
-  
+
   grafana:
     image: grafana/grafana-oss:${GRAFANA_VERSION}
     ports:
       - "3000:3000"
     user: "$${UID}"
     volumes:
-      - ./${MODEL_NAME}/data:/var/lib/grafana:z
+      - ./grafana:/var/lib/grafana:z
     networks:
       - backend
 
