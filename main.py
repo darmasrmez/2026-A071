@@ -63,6 +63,7 @@ def compose_template():
     os.makedirs(f"./{params['MODEL_NAME']}/{params['SIZE']}/grafana", exist_ok=True)
     os.makedirs(f"./{params['MODEL_NAME']}/{params['SIZE']}/metrics", exist_ok=True)
     shutil.copy("./prometheus.yml", f"./{params['MODEL_NAME']}/{params['SIZE']}/prometheus.yml")
+    shutil.copy('./.env', f"./{params['MODEL_NAME']}/{params['SIZE']}/.env")
 
     python_file_path = f"./{params['MODEL_NAME']}/{params['SIZE']}/{params['MODEL_NAME']}-{params['SIZE']}.py"
     with open(python_file_path, "w") as f:

@@ -1,12 +1,12 @@
 version: '3.9'
 
-name: 2026-A071_${MODEL_NAME}_${SIZE}
+name: 2026-A071_Ministral-3_14B
 
 services:
-  ${MODEL_NAME}-fine-tuning:
+  Ministral-3-fine-tuning:
     build:
       context: .
-      dockerfile: ${MODEL_NAME}-${SIZE}.Dockerfile
+      dockerfile: Ministral-3-14B.Dockerfile
     ipc: host
     devices:
       - /dev/kfd:/dev/kfd
@@ -18,7 +18,7 @@ services:
       - backend
 
   prometheus:
-    image: prom/prometheus:${PROMETHEUS_VERSION}
+    image: prom/prometheus:main-distroless
     ports:
       - "9090:9090"
     volumes:
@@ -30,7 +30,7 @@ services:
       - '--storage.tsdb.path=/prometheus'
 
   node_exporter:
-    image: prom/node-exporter:${NODE_EXPORTER_VERSION}
+    image: prom/node-exporter:v1-distroless
     container_name: node_exporter
     ports:
       - "9100:9100"
@@ -41,7 +41,7 @@ services:
 
   amd_dme:
     container_name: amd_dme
-    image: rocm/device-metrics-exporter:${AMD_DME_VERSION}
+    image: rocm/device-metrics-exporter:v1.4.2
     ports:
       - "5000:5000"
     devices:
@@ -53,10 +53,10 @@ services:
       - backend
 
   grafana:
-    image: grafana/grafana-oss:${GRAFANA_VERSION}
+    image: grafana/grafana-oss:12.4.2
     ports:
       - "3000:3000"
-    user: "$${UID}"
+    user: "${UID}"
     volumes:
       - ./grafana:/var/lib/grafana:z
     networks:
