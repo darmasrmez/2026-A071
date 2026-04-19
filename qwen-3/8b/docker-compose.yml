@@ -1,0 +1,96 @@
+version: '3.9'
+
+name: 2026-A071_qwen-3_8b
+
+services:
+  # Training reads env vars (see `train_common.py`). Override in `.env` or here.
+  # Other recipes: `command: ["python", "finetune_peft_int8.py"]` or `finetune_peft_qlora.py`
+  qwen-3-fine-tuning:
+    build:
+      context: .
+      dockerfile: qwen-3-8b.Dockerfile
+    ipc: host
+    shm_size: "16gb"
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - ./:/app:z
+      - /sys:/sys:ro
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HIP_VISIBLE_DEVICES: ${HIP_VISIBLE_DEVICES:-}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-}
+      MODEL_ID: ${MODEL_ID:-Qwen/Qwen3-8B}
+      DATASET_ID: ${DATASET_ID:-bio-nlp-umass/bioinstruct}
+      DATASET_SPLIT: ${DATASET_SPLIT:-train}
+      OUTPUT_DIR: ${OUTPUT_DIR:-/app/outputs}
+      MAX_SEQ_LENGTH: ${MAX_SEQ_LENGTH:-2048}
+      NUM_TRAIN_EPOCHS: ${NUM_TRAIN_EPOCHS:-1}
+      LEARNING_RATE: ${LEARNING_RATE:-2e-5}
+      LORA_R: ${LORA_R:-16}
+      LORA_ALPHA: ${LORA_ALPHA:-32}
+      LORA_DROPOUT: ${LORA_DROPOUT:-0.05}
+      PER_DEVICE_TRAIN_BATCH_SIZE: ${PER_DEVICE_TRAIN_BATCH_SIZE:-1}
+      PER_DEVICE_EVAL_BATCH_SIZE: ${PER_DEVICE_EVAL_BATCH_SIZE:-1}
+      GRADIENT_ACCUMULATION_STEPS: ${GRADIENT_ACCUMULATION_STEPS:-8}
+      WARMUP_STEPS: ${WARMUP_STEPS:-100}
+      LOGGING_STEPS: ${LOGGING_STEPS:-20}
+      SAVE_STEPS: ${SAVE_STEPS:-500}
+      SEED: ${SEED:-42}
+      EVAL_RATIO: ${EVAL_RATIO:-0.2}
+      REPORT_TO: ${REPORT_TO:-none}
+      TRUST_REMOTE_CODE: ${TRUST_REMOTE_CODE:-false}
+      TRAIN_OPTIM: ${TRAIN_OPTIM:-adamw_torch}
+    command: ["python", "finetune_peft_bf16.py"]
+    networks:
+      - backend
+
+  prometheus:
+    image: prom/prometheus:main-distroless
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:z
+      - ./metrics:/prometheus:z
+    networks:
+      - backend
+    command:
+      - '--storage.tsdb.path=/prometheus'
+
+  node_exporter:
+    image: prom/node-exporter:v1-distroless
+    container_name: node_exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /sys:/sys:ro
+    networks:
+      - backend
+
+  amd_dme:
+    container_name: amd_dme
+    image: rocm/device-metrics-exporter:v1.4.2
+    ports:
+      - "5000:5000"
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - /sys:/sys:ro
+    networks:
+      - backend
+
+  grafana:
+    image: grafana/grafana-oss:12.4.2
+    ports:
+      - "3000:3000"
+    user: "${UID}"
+    volumes:
+      - ./grafana:/var/lib/grafana:z
+    networks:
+      - backend
+
+networks:
+  backend:
+    driver: bridge
