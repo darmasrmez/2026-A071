@@ -8,4 +8,4 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY . /app
 
-CMD ["python", "qwen-3-8b.py"]
+CMD ["python", "ministral-3-8b.py"]

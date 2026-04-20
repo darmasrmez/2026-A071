@@ -16,7 +16,7 @@ scrape_configs:
 
   - job_name: 'training_power'
     static_configs:
-      - targets: ['qwen-3-fine-tuning:8000']
+      - targets: ['ministral-3-fine-tuning:8000']
 
   - job_name: 'kepler'
     static_configs:

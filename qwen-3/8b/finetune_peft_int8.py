@@ -13,6 +13,7 @@ from peft import prepare_model_for_kbit_training
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 from trl import SFTTrainer
 
+from power_telemetry import PowerTelemetry
 from train_common import (
     build_lora_config,
     build_sft_config,
@@ -40,7 +41,15 @@ def main() -> None:
     configure_distributed()
     log_cuda_sanity()
 
+    telemetry = PowerTelemetry(
+        project_name='qwen3-8b-int8',
+        output_dir='./code_carbon_qwen3_8b',
+    )
+    telemetry.start()
+
     tokenizer = load_tokenizer(cfg.model_id, cfg.trust_remote_code)
+
+    telemetry.begin_phase('dataset')
     train_ds, eval_ds = load_bioinstruct_datasets(
         tokenizer,
         cfg.dataset_id,
@@ -48,7 +57,9 @@ def main() -> None:
         cfg.eval_ratio,
         cfg.seed,
     )
+    ds_energy = telemetry.end_phase('dataset')
 
+    telemetry.begin_phase('load_model')
     bnb_config = BitsAndBytesConfig(load_in_8bit=True)
     lr = local_rank()
     device_map = {"": lr} if lr >= 0 else "auto"
@@ -81,10 +92,19 @@ def main() -> None:
         peft_config=peft_config,
         processing_class=tokenizer,
     )
+    lmodel_energy = telemetry.end_phase('load_model')
+
+    telemetry.begin_phase('fine_tuning')
     trainer.train()
     print_trainable_parameters(trainer.model)
     trainer.save_model(cfg.output_dir)
     tokenizer.save_pretrained(cfg.output_dir)
+    ft_energy = telemetry.end_phase('fine_tuning')
+
+    telemetry.stop()
+    print(f'Energy loading dataset: {ds_energy}')
+    print(f'Energy loading model: {lmodel_energy}')
+    print(f'Energy in fine-tuning model: {ft_energy}')
 
 
 if __name__ == "__main__":

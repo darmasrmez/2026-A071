@@ -11,7 +11,7 @@ def install_package(pkg_name:str):
         subprocess.check_call(['uv', 'pip', 'install', pkg_name])
         print(f'{pkg_name} successfully installed')
 
-pkgs = ['python-dotenv', 'transformers', 'trl', 'accelerate', 'bitsandbytes', 'datasets', 'ninja', 'peft', 'codecarbon', 'packaging', 'zeus', 'wandb', 'adapters', 'huggingface-hub', 'tqdm', 'evaluate', 'bert_score', 'google-tunix']
+pkgs = ['python-dotenv', 'transformers', 'trl', 'accelerate', 'bitsandbytes', 'datasets', 'ninja', 'peft', 'codecarbon', 'packaging', 'zeus', 'wandb', 'adapters', 'huggingface-hub', 'tqdm', 'evaluate', 'bert_score', 'google-tunix', 'prometheus-client']
 
 for pkg in pkgs:
     install_package(pkg)
@@ -46,6 +46,7 @@ from codecarbon.output import LoggerOutput
 import logging
 from zeus.device import get_gpus
 from zeus.monitor import ZeusMonitor
+from prometheus_client import start_http_server, Gauge
 
 gpus = get_gpus()
 print(gpus)
@@ -82,7 +83,54 @@ _channel = logging.FileHandler(log_name + '.log')
 _logger.addHandler(_channel)
 _logger.setLevel(logging.INFO)
 
-my_logger = LoggerOutput(_logger, logging.INFO)
+start_http_server(8000)
+
+PHASE = Gauge('training_phase', 'Current fine-tuning phase (1=active, 0=inactive)', ['phase'])
+CPU_W = Gauge('training_cpu_power_watts', 'CPU power from codecarbon (watts)')
+RAM_W = Gauge('training_ram_power_watts', 'RAM power from codecarbon, estimate (watts)')
+CPU_E = Gauge('training_cpu_energy_kwh', 'Cumulative CPU energy (kWh)')
+RAM_E = Gauge('training_ram_energy_kwh', 'Cumulative RAM energy (kWh)')
+
+PHASES = ('dataset', 'load_model', 'fine_tuning')
+for _p in PHASES:
+    PHASE.labels(phase=_p).set(0)
+
+POWER_CSV = './code_carbon_ministral_3_14b/power_timeseries.csv'
+with open(POWER_CSV, 'w') as _f:
+    _f.write('timestamp,cpu_w,ram_w,phase\n')
+
+_current_phase = {'name': 'idle'}
+
+
+class PromAndCsvLoggerOutput(LoggerOutput):
+    """codecarbon LoggerOutput that ALSO updates Prometheus gauges and appends to power_timeseries.csv on every flush."""
+
+    def _publish(self, total, delta):
+        cpu_w = float(getattr(delta, 'cpu_power', 0.0) or 0.0)
+        ram_w = float(getattr(delta, 'ram_power', 0.0) or 0.0)
+        CPU_W.set(cpu_w)
+        RAM_W.set(ram_w)
+        CPU_E.set(float(getattr(total, 'cpu_energy', 0.0) or 0.0))
+        RAM_E.set(float(getattr(total, 'ram_energy', 0.0) or 0.0))
+        try:
+            with open(POWER_CSV, 'a') as fh:
+                fh.write(f"{datetime.utcnow().isoformat()},{cpu_w},{ram_w},{_current_phase['name']}\n")
+        except Exception:
+            pass
+
+    def out(self, total, delta):
+        super().out(total, delta)
+        self._publish(total, delta)
+
+    def live_out(self, total, delta):
+        try:
+            super().live_out(total, delta)
+        except AttributeError:
+            pass
+        self._publish(total, delta)
+
+
+my_logger = PromAndCsvLoggerOutput(_logger, logging.INFO)
 
 tracker = EmissionsTracker(
     project_name = 'bio-ministral-3-14b',
@@ -98,14 +146,29 @@ tracker = EmissionsTracker(
 tracker.start()
 monitor = ZeusMonitor(gpu_indices=[torch.cuda.current_device()])
 
+
+def begin_phase(name: str):
+    """Mark a fine-tuning phase active: set Prometheus gauge to 1 and start a Zeus window."""
+    _current_phase['name'] = name
+    PHASE.labels(phase=name).set(1)
+    monitor.begin_window(name)
+
+
+def end_phase(name: str):
+    """End a fine-tuning phase: close the Zeus window and clear the Prometheus gauge."""
+    energy = monitor.end_window(name)
+    PHASE.labels(phase=name).set(0)
+    _current_phase['name'] = 'idle'
+    return energy
+
 print('Mapping dataset')
-monitor.begin_window('dataset')
+begin_phase('dataset')
 dataset = load_dataset("bio-nlp-umass/bioinstruct", split="train")
 dataset = dataset.map(format_sample)
 
-ds_energy = monitor.end_window('dataset')
+ds_energy = end_phase('dataset')
 
-monitor.begin_window('load model')
+begin_phase('load_model')
 model_name = "mistralai/Ministral-3-14B-Instruct-2512"
 device = 'cuda'
 tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
@@ -162,9 +225,9 @@ trainer = SFTTrainer(
         processing_class=tokenizer,
         args=training_arguments,
 )
-lmodel_energy = monitor.end_window('load model')
+lmodel_energy = end_phase('load_model')
 
-monitor.begin_window('fine-tuning')
+begin_phase('fine_tuning')
 trainer.train()
 
 print_trainable_parameters(model)
@@ -172,7 +235,7 @@ print_trainable_parameters(model)
 new_model = 'Bio-ministral-3-14b'
 trainer.model.save_pretrained(new_model)
 
-ft_energy = monitor.end_window('fine-tuning')
+ft_energy = end_phase('fine_tuning')
 
 emissions = tracker.stop()
 
@@ -196,6 +259,32 @@ plt.grid(True)
 plt.show()
 plt.tight_layout()
 plt.savefig('loss_function.png', transparent=True)
+
+try:
+    power_df = pd.read_csv(POWER_CSV, parse_dates=['timestamp'])
+    if not power_df.empty:
+        fig, ax = plt.subplots(figsize=(15, 8))
+        ax.plot(power_df['timestamp'], power_df['cpu_w'], label='CPU (W)')
+        ax.plot(power_df['timestamp'], power_df['ram_w'], label='RAM (W)')
+
+        phase_colors = {'dataset': 'tab:orange', 'load_model': 'tab:green', 'fine_tuning': 'tab:red'}
+        for phase_name, color in phase_colors.items():
+            mask = power_df['phase'] == phase_name
+            if mask.any():
+                ax.axvspan(power_df.loc[mask, 'timestamp'].min(),
+                           power_df.loc[mask, 'timestamp'].max(),
+                           alpha=0.1, color=color, label=f'phase: {phase_name}')
+
+        ax.set_title('Consumo de potencia del contenedor (CPU y RAM)')
+        ax.set_xlabel('Tiempo')
+        ax.set_ylabel('Potencia (W)')
+        ax.legend(loc='upper right')
+        ax.grid(True)
+        fig.tight_layout()
+        fig.savefig('power_consumption.png', transparent=True)
+        plt.close(fig)
+except FileNotFoundError:
+    print(f'No power time series found at {POWER_CSV}')
 
 print(f'Energy loading dataset: {ds_energy}')
 print(f'Energy loading model: {lmodel_energy}')

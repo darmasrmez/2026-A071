@@ -13,3 +13,11 @@ scrape_configs:
   - job_name: 'gpu_metrics'
     static_configs:
       - targets: ['amd_dme:5000']
+
+  - job_name: 'training_power'
+    static_configs:
+      - targets: ['${MODEL_NAME}-fine-tuning:8000']
+
+  - job_name: 'kepler'
+    static_configs:
+      - targets: ['kepler:9102']
