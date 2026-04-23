@@ -1,20 +1,21 @@
 import sys
 import os
+os.environ['CUDA_VISIBLE_DEVICES'] = "0,1"
 import subprocess
 import torch
 
-def install_package(pkg_name:str):
+pkgs = ['python-dotenv', 'openai-harmony', 'trackio', 'triton>=3.4.0', 'transformers>=5.0.0', 'trl>=1.0.0', 'accelerate', 'unsloth_zoo', 'unsloth', 'bitsandbytes', 'datasets', 'ninja', 'peft', 'codecarbon', 'packaging', 'zeus', 'wandb', 'huggingface-hub', 'tqdm', 'evaluate', 'bert_score', 'prometheus-client']
+
+def install_packages(packages):
     try:
-        __import__(pkg_name)
-        print(f'{pkg_name} already installed')
-    except ImportError:
-        subprocess.check_call(['uv', 'pip', 'install', pkg_name])
-        print(f'{pkg_name} successfully installed')
+        subprocess.check_call(['uv', 'pip', 'install'] + packages)
+        print('All packages installed successfully')
+    except subprocess.CalledProcessError as e:
+        print(f'Error installing packages: {e}')
 
-pkgs = ['python-dotenv', 'transformers', 'trl', 'accelerate', 'bitsandbytes', 'datasets', 'ninja', 'peft', 'codecarbon', 'packaging', 'zeus', 'wandb', 'adapters', 'huggingface-hub', 'tqdm', 'evaluate', 'bert_score', 'google-tunix', 'prometheus-client']
+install_packages(pkgs)
 
-for pkg in pkgs:
-    install_package(pkg)
+
 
 from dotenv import load_dotenv
 from huggingface_hub import login, auth_list
@@ -29,9 +30,16 @@ login(token=hf_token, add_to_git_credential=False)
 
 auth_list()
 
+from openai_harmony import (
+    load_harmony_encoding, HarmonyEncodingName,
+    Conversation, Role, Message,
+    SystemContent, DeveloperContent, ReasoningEffort
+)
 import json
 from datetime import datetime
 from datasets import load_dataset
+from unsloth import FastLanguageModel
+
 from peft import LoraConfig, PeftModel, prepare_model_for_kbit_training, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
@@ -47,19 +55,12 @@ import logging
 from zeus.device import get_gpus
 from zeus.monitor import ZeusMonitor
 from prometheus_client import start_http_server, Gauge
+from unsloth.chat_templates import standardize_sharegpt
 
 gpus = get_gpus()
 print(gpus)
-
-def format_sample(example):
-    prompt = example["instruction"]
-    if "input" in example and len(example["input"]) > 0:
-        prompt += "\n" + example["input"]
-    answer = example["output"]
-    return {
-        "text": f"<s>[INST]{prompt}[/INST]{answer}</s>"
-    }
-
+max_seq_length = 1024
+dtype = None
 
 def print_trainable_parameters(model):
     """
@@ -74,10 +75,9 @@ def print_trainable_parameters(model):
         f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param}"
     )
 
+os.makedirs('code_carbon_gpt_oss_20b', exist_ok=True)
 
-os.makedirs('code_carbon_ministral_3_14b', exist_ok=True)
-
-log_name = "bioministral_3_14b_logs"
+log_name = "bio_gpt_oss_20b_logs"
 _logger = logging.getLogger(log_name)
 _channel = logging.FileHandler(log_name + '.log')
 _logger.addHandler(_channel)
@@ -95,12 +95,11 @@ PHASES = ('dataset', 'load_model', 'fine_tuning')
 for _p in PHASES:
     PHASE.labels(phase=_p).set(0)
 
-POWER_CSV = './code_carbon_ministral_3_14b/power_timeseries.csv'
+POWER_CSV = './code_carbon_gpt_oss_20b/power_timeseries.csv'
 with open(POWER_CSV, 'w') as _f:
     _f.write('timestamp,cpu_w,ram_w,phase\n')
 
 _current_phase = {'name': 'idle'}
-
 
 class PromAndCsvLoggerOutput(LoggerOutput):
     """codecarbon LoggerOutput that ALSO updates Prometheus gauges and appends to power_timeseries.csv on every flush."""
@@ -133,8 +132,8 @@ class PromAndCsvLoggerOutput(LoggerOutput):
 my_logger = PromAndCsvLoggerOutput(_logger, logging.INFO)
 
 tracker = EmissionsTracker(
-    project_name = 'bio-ministral-3-14b',
-    output_dir="./code_carbon_ministral_3_14b/",
+    project_name = 'bio-gpt-oss-20b',
+    output_dir="./code_carbon_gpt_oss_20b/",
     save_to_file=True,
     on_csv_write='append',
     output_file="emissions.csv",
@@ -143,9 +142,6 @@ tracker = EmissionsTracker(
     save_to_logger=True,
     logging_logger=my_logger
 )
-tracker.start()
-monitor = ZeusMonitor(gpu_indices=[torch.cuda.current_device()])
-
 
 def begin_phase(name: str):
     """Mark a fine-tuning phase active: set Prometheus gauge to 1 and start a Zeus window."""
@@ -161,82 +157,118 @@ def end_phase(name: str):
     _current_phase['name'] = 'idle'
     return energy
 
+def formatting_prompts_func(examples):
+    convos = examples["messages"]
+    texts = [tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False) for convo in convos]
+    return { "text" : texts, }
+
+
+tracker.start()
+monitor = ZeusMonitor(gpu_indices=[torch.cuda.current_device()])
+
+enc = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+def render_pair_harmony(question, answer):
+    convo = Conversation.from_messages([
+        Message.from_role_and_content(
+            Role.DEVELOPER,
+            DeveloperContent.new().with_instructions(
+                "You are a biomedical expert with advanced knowledge in clinical reasoning and diagnostics. "
+                "Respond with ONLY the final diagnosis/cause in ≤15 words."
+            )
+        ),
+        Message.from_role_and_content(Role.USER, question.strip()),
+        Message.from_role_and_content(Role.ASSISTANT, answer.strip()),
+    ])
+    tokens = enc.render_conversation(convo)
+    text = enc.decode(tokens)
+    return text
+
+def prompt_style_harmony(examples):
+    qs = examples["instruction"]
+    inputs = examples["input"]
+    ans = examples["output"]
+    outputs = {"text": []}
+    for q, i, a in zip(qs, inputs, ans):
+        rendered = render_pair_harmony(q+i, a)
+        outputs["text"].append(rendered)
+    return outputs
+
+def formatting_prompts_func(examples):
+   convos = examples["text"]
+   texts = [tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False) for convo in convos]
+   return { "text" : texts, }
+
 print('Mapping dataset')
 begin_phase('dataset')
 dataset = load_dataset("bio-nlp-umass/bioinstruct", split="train")
-dataset = dataset.map(format_sample)
+dataset = standardize_sharegpt(dataset)
+dataset = dataset.map(prompt_style_harmony, batched=True)
+dataset = dataset.map(formatting_prompts_func, batched=True)
 
 ds_energy = end_phase('dataset')
 
 begin_phase('load_model')
-model_name = "mistralai/Ministral-3-14B-Instruct-2512"
-device = 'cuda'
-tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-tokenizer.pad_token = tokenizer.unk_token
-tokenizer.pad_token_id = tokenizer.unk_token_id
-
-compute_dtype = getattr(torch, "float16")
-
-
-print('Downloading model')
-model = AutoModelForCausalLM.from_pretrained(
-          model_name,
-          device_map="auto",
+model, tokenizer = FastLanguageModel.from_pretrained(
+    model_name = "unsloth/gpt-oss-20b",
+    dtype = dtype,
+    max_seq_length = max_seq_length,
+    load_in_4bit = True,
+    full_finetuning = False,
+    token = hf_token,
 )
 
-dataset_splits = dataset.train_test_split(test_size=0.2, seed=42)
-train_dataset = dataset_splits['train']
-test_dataset = dataset_splits['test']
-
-peft_config = LoraConfig(
-    lora_alpha=32,
-    lora_dropout=0.07,
-    r=32,
-    bias="none",
-    task_type="CAUSAL_LM",
-    target_modules= ['k_proj', 'q_proj', 'v_proj', 'o_proj', "gate_proj", "down_proj", "up_proj", "lm_head",]
+model = FastLanguageModel.get_peft_model(
+    model,
+    r = 8,
+    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    lora_alpha = 16,
+    lora_dropout = 0,
+    bias = "none",
+    use_gradient_checkpointing = "unsloth",
+    random_state = 3407,
+    use_rslora = False,
+    loftq_config = None,
 )
 
-model.config.pad_token_id = tokenizer.pad_token_id
-model.config.use_cache = False
-
-training_arguments = TrainingArguments(
-    output_dir="./results",
-    report_to="wandb",
-    eval_strategy="epoch",
-    optim="paged_adamw_8bit",
-    per_device_train_batch_size=4,
-    per_device_eval_batch_size=4,
-    gradient_accumulation_steps=1,
-    log_level="info",
-    save_steps=500,
-    logging_steps=20,
-    learning_rate=2e-5,
-    num_train_epochs=1,
-    warmup_steps=100,
-    lr_scheduler_type="constant",
-)
-
-trainer = SFTTrainer(
-        model=model,
-        train_dataset=train_dataset,
-        eval_dataset=test_dataset,
-        peft_config=peft_config,
-        processing_class=tokenizer,
-        args=training_arguments,
-)
 lmodel_energy = end_phase('load_model')
 
 begin_phase('fine_tuning')
-trainer.train()
 
+from trl import SFTConfig, SFTTrainer
+trainer = SFTTrainer(
+    model = model,
+    tokenizer = tokenizer,
+    train_dataset = dataset,
+    args = SFTConfig(
+        per_device_train_batch_size = 1,
+        gradient_accumulation_steps = 4,
+        warmup_steps = 5,
+        num_train_epochs = 1,
+        max_steps = None,
+        learning_rate = 2e-4,
+        logging_steps = 1,
+        optim = "adamw_8bit",
+        weight_decay = 0.001,
+        lr_scheduler_type = "linear",
+        seed = 3407,
+        output_dir = "outputs",
+        report_to = "wandb",
+    ),
+)
+
+from unsloth.chat_templates import train_on_responses_only
+
+gpt_oss_kwargs = dict(instruction_part = "<|start|>user<|message|>", response_part = "<|start|>assistant<|channel|>final<|message|>")
+
+trainer = train_on_responses_only(
+    trainer,
+    **gpt_oss_kwargs,
+)
+trainer_stats = trainer.train()
 print_trainable_parameters(model)
 
-new_model = 'Bio-ministral-3-14b'
-trainer.model.save_pretrained(new_model)
-
 ft_energy = end_phase('fine_tuning')
-
 emissions = tracker.stop()
 
 import pandas as pd
@@ -289,3 +321,5 @@ except FileNotFoundError:
 print(f'Energy loading dataset: {ds_energy}')
 print(f'Energy loading model: {lmodel_energy}')
 print(f'Energy in fine-tuning model: {ft_energy}')
+
+model.push_to_hub("darmasrmz/bio-gpt-oss-20b-lora", token = hf_token)
