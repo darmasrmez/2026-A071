@@ -1,0 +1,84 @@
+version: '3.9'
+
+name: 2026-A071_gpt-oss_20b
+
+services:
+  gpt-oss-fine-tuning:
+    container_name: gpt-oss-fine-tuning
+    build:
+      context: .
+      dockerfile: gpt-oss-20b.Dockerfile
+    ipc: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app:z
+      - /sys:/sys:ro
+    networks:
+      - backend
+
+  prometheus:
+    image: prom/prometheus:main-distroless
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:z
+      - ./metrics:/prometheus:z
+    networks:
+      - backend
+    command:
+      - '--storage.tsdb.path=/prometheus'
+
+  node_exporter:
+    image: prom/node-exporter:v1-distroless
+    container_name: node_exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - /sys:/sys:ro
+    networks:
+      - backend
+
+  amd_dme:
+    container_name: amd_dme
+    image: rocm/device-metrics-exporter:v1.4.2
+    ports:
+      - "5000:5000"
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    volumes:
+      - /sys:/sys:ro
+    networks:
+      - backend
+
+  kepler:
+    container_name: kepler
+    image: quay.io/sustainable_computing_io/kepler:release-0.7.12
+    privileged: true
+    pid: host
+    ports:
+      - "9102:9102"
+    volumes:
+      - /proc:/proc
+      - /sys:/sys
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - backend
+
+  grafana:
+    image: grafana/grafana-oss:12.4.2
+    ports:
+      - "3000:3000"
+    user: "${UID}"
+    volumes:
+      - ./grafana:/var/lib/grafana:z
+    networks:
+      - backend
+
+networks:
+  backend:
+    driver: bridge
