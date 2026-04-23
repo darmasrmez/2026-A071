@@ -1,20 +1,21 @@
 import sys
 import os
 import subprocess
+
+os.environ['CUDA_VISIBLE_DEVICES']="0,1"
 import torch
 
-def install_package(pkg_name:str):
+pkgs = ['python-dotenv', 'trackio', 'mistral-common', 'transformers>=5.0', 'trl[peft]>=1.0.0', 'accelerate', 'bitsandbytes', 'datasets', 'ninja', 'codecarbon', 'packaging', 'zeus', 'wandb', 'huggingface-hub', 'tqdm', 'evaluate', 'bert_score', 'google-tunix' ]
+
+def install_packages(packages):
+    print("Resolving environment and installing packages via uv...")
     try:
-        __import__(pkg_name)
-        print(f'{pkg_name} already installed')
-    except ImportError:
-        subprocess.check_call(['uv', 'pip', 'install', pkg_name])
-        print(f'{pkg_name} successfully installed')
+        subprocess.check_call(['uv', 'pip', 'install'] + packages)
+        print("All packages successfully installed and verified!")
+    except subprocess.CalledProcessError as e:
+        print(f"Installation failed: {e}")
 
-pkgs = ['python-dotenv', 'transformers', 'trl', 'accelerate', 'bitsandbytes', 'datasets', 'ninja', 'peft', 'codecarbon', 'packaging', 'zeus', 'wandb', 'adapters', 'huggingface-hub', 'tqdm', 'evaluate', 'bert_score', 'google-tunix', 'prometheus-client']
-
-for pkg in pkgs:
-    install_package(pkg)
+install_packages(pkgs)
 
 from dotenv import load_dotenv
 from huggingface_hub import login, auth_list
@@ -39,7 +40,10 @@ from transformers import (
     BitsAndBytesConfig,
     AutoTokenizer,
     TrainingArguments,
+    MistralCommonBackend,
+    Mistral3ForConditionalGeneration
 )
+from accelerate import Accelerator
 from trl import SFTTrainer
 from codecarbon import EmissionsTracker
 from codecarbon.output import LoggerOutput
@@ -50,6 +54,8 @@ from prometheus_client import start_http_server, Gauge
 
 gpus = get_gpus()
 print(gpus)
+
+accelerator = Accelerator()
 
 def format_sample(example):
     prompt = example["instruction"]
@@ -169,9 +175,9 @@ dataset = dataset.map(format_sample)
 ds_energy = end_phase('dataset')
 
 begin_phase('load_model')
-model_name = "mistralai/Ministral-3-14B-Instruct-2512"
-device = 'cuda'
-tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+model_name = "mistralai/Ministral-3-14B-Base-2512"
+device = accelerator.device
+tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
 tokenizer.pad_token = tokenizer.unk_token
 tokenizer.pad_token_id = tokenizer.unk_token_id
 
@@ -179,9 +185,10 @@ compute_dtype = getattr(torch, "float16")
 
 
 print('Downloading model')
-model = AutoModelForCausalLM.from_pretrained(
+model = Mistral3ForConditionalGeneration.from_pretrained(
           model_name,
-          device_map="auto",
+          dtype = torch.bfloat16,
+          device_map={"": accelerator.local_process_index}
 )
 
 dataset_splits = dataset.train_test_split(test_size=0.2, seed=42)
@@ -207,7 +214,9 @@ training_arguments = TrainingArguments(
     optim="paged_adamw_8bit",
     per_device_train_batch_size=4,
     per_device_eval_batch_size=4,
-    gradient_accumulation_steps=1,
+    gradient_accumulation_steps=8,
+    gradient_checkpointing=True,
+    dataloader_num_workers = 4,
     log_level="info",
     save_steps=500,
     logging_steps=20,
@@ -221,9 +230,9 @@ trainer = SFTTrainer(
         model=model,
         train_dataset=train_dataset,
         eval_dataset=test_dataset,
-        peft_config=peft_config,
         processing_class=tokenizer,
         args=training_arguments,
+        peft_config=peft_config,
 )
 lmodel_energy = end_phase('load_model')
 
