@@ -16,7 +16,7 @@ scrape_configs:
 
   - job_name: 'training_power'
     static_configs:
-      - targets: ['${MODEL_NAME}-fine-tuning:8000']
+      - targets: ['qwen-3-fine-tuning:8000']
 
   - job_name: 'kepler'
     static_configs:

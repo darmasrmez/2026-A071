@@ -5,6 +5,9 @@ description = "Measuring carbon footprint of LLM fine-tuning"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "datasets>=4.8.4",
+    "openai-harmony>=0.0.8",
     "python-dotenv>=1.2.2",
     "pyyaml>=6.0.3",
+    "unsloth>=2025.11.1",
 ]
